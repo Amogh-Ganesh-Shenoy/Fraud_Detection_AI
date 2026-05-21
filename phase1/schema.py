@@ -79,6 +79,7 @@ def create_database():
             usual_location TEXT,
             typical_device TEXT,
             typical_login_hour INTEGER,
+            historical_baseline_amount REAL DEFAULT NULL
             updated_at TEXT,
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
