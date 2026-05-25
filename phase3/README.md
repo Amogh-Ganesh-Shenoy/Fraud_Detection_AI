@@ -1,56 +1,90 @@
 # Phase 3 — Rule-Based Risk Engine
 
-## What this phase does
-The core fraud detection engine. Takes a transaction and session, compares them
-against the user's behavior profile, applies 6 risk rules, produces a risk score
-from 0-100 and returns a decision.
+## Overview
+Scores every transaction against 9 risk rules and returns an APPROVE,
+CHALLENGE, or BLOCK decision. Location risk is handled as a separate
+module following the separation of concerns principle.
 
 ## Files
-- `risk_engine.py` — Full rule-based scoring engine
+- `risk_engine.py` — core scoring engine, 9 rules, alert writer
+- `location_risk.py` — location risk scorer, 3 sub-features, max +15
 
-## Risk Score Thresholds
+---
+
+## Decision Thresholds
+
 | Score | Decision |
-|---|---|
-| 0 - 30 | APPROVE |
-| 31 - 70 | CHALLENGE |
-| 71 - 100 | BLOCK |
+|-------|----------|
+| 0 – 30 | APPROVE |
+| 31 – 70 | CHALLENGE |
+| 71 – 100 | BLOCK |
+
+---
 
 ## Risk Rules
-| Rule | Points | Trigger Condition |
-|---|---|---|
-| VPN_DETECTED | +20 | VPN detected during session |
-| HIGH_AMOUNT | +25 | Transaction amount exceeds 3x user average |
-| UNUSUAL_LOCATION | +15 | Transaction location differs from usual location |
-| NEW_DEVICE | +15 | Device differs from typical device |
-| UNUSUAL_LOGIN_HOUR | +10 | Login hour more than 3 hours from typical hour |
-| HIGH_VELOCITY | +15 | More than 3 transactions in last 10 minutes |
+
+| Rule | Points | Trigger |
+|------|--------|---------|
+| `VPN_DETECTED` | +20 | VPN active during session |
+| `HIGH_AMOUNT` | +25 | Transaction amount > 3x user's average |
+| `UNUSUAL_LOGIN_LOCATION` | +5 | Login city ≠ user's usual location |
+| `UNUSUAL_TRANSACTION_LOCATION` | +5 | Transaction city ≠ user's usual location |
+| `LOGIN_TRANSACTION_MISMATCH` | +5 | Login city ≠ transaction city |
+| `NEW_DEVICE` | +15 | Device differs from user's typical device |
+| `UNUSUAL_LOGIN_HOUR` | +10 | Login hour > 3h from typical login hour |
+| `HIGH_VELOCITY` | +15 | > 3 transactions from same account in 10 mins |
+| `STRUCTURING_DETECTED` | +25 | Repeated near-identical amounts at regular intervals |
+
+**Maximum possible score: 125 — capped at 100**
+
+---
+
+## location_risk.py
+
+Separates location scoring logic from the core engine for reusability
+and clean architecture. Called by `risk_engine.py` during Rule 3 scoring.
+
+### Sub-features
+
+| Sub-feature | Points | Trigger |
+|-------------|--------|---------|
+| `UNUSUAL_LOGIN_LOCATION` | +5 | Login city ≠ profile usual location |
+| `UNUSUAL_TRANSACTION_LOCATION` | +5 | Transaction city ≠ profile usual location |
+| `LOGIN_TRANSACTION_MISMATCH` | +5 | Login city ≠ transaction city |
+
+**Maximum combined location score: +15**
+
+### Future Enhancement
+`IMPOSSIBLE_TRAVEL` — flagged for Phase 6 implementation when the data
+model distinguishes physical vs online transactions.
+
+---
+
+## Structuring Detection
+
+Detects bot-driven fraud patterns where an attacker submits repeated
+near-identical amounts at metronomic intervals to avoid velocity rules.
+
+Detection logic:
+1. Query transactions from same account, amount within ±5%, last 20 minutes
+2. Require at least 3 matching transactions
+3. Calculate time gaps between consecutive transactions
+4. Flag if standard deviation of gaps < 20% of average gap
+
+---
 
 ## Key Functions
+
 | Function | Description |
-|---|---|
-| score_transaction() | Core engine — scores a transaction, writes to alerts table |
-| get_decision() | Converts risk score to APPROVE/CHALLENGE/BLOCK |
-| print_result() | Pretty prints scoring result for testing |
+|----------|-------------|
+| `score_transaction()` | Core engine — fetches data, applies all rules, writes alert to DB |
+| `get_decision()` | Converts numeric score to APPROVE / CHALLENGE / BLOCK |
+| `check_structuring()` | Detects metronomic bot transaction patterns |
+| `score_location_risk()` | Scores 3 location sub-features, returns score + reason codes |
+| `print_result()` | Pretty prints result dict for terminal testing |
 
-## Output
-Every scored transaction produces an alert record containing:
-- Risk score
-- Decision
-- Reason codes
-- Timestamp
-
-## How to run
-```bash
-python phase3/risk_engine.py
+## Run
+```powershell
+# From project root
+python -c "from phase3.risk_engine import score_transaction, print_result; ..."
 ```
-
-## Security
-- All database queries use parameterised statements
-- No raw user input touches the database directly
-- Score is capped at 100 regardless of rules triggered
-
-## Links to other phases
-Phase 2 maintains the behavior profiles this engine reads.
-Phase 4 Streamlit UI calls this engine and displays results.
-Phase 5 runs this engine in bulk across all transactions.
-Phase 6 adds ML scoring on top of this rule layer.
