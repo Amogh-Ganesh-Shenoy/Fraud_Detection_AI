@@ -17,6 +17,7 @@ import sqlite3
 import uuid
 import statistics
 from datetime import datetime, timedelta
+from phase3.location_risk import score_location_risk
 from dotenv import load_dotenv
 import os
 
@@ -130,13 +131,15 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
     and returns a result dictionary.
 
     Risk Rules:
-        VPN_DETECTED        +20  — VPN active during session
-        HIGH_AMOUNT         +25  — Amount > 3x user's average
-        UNUSUAL_LOCATION    +15  — Location differs from user's usual
-        NEW_DEVICE          +15  — Device differs from user's typical
-        UNUSUAL_LOGIN_HOUR  +10  — Login hour > 3h from typical
-        HIGH_VELOCITY       +15  — >3 transactions from account in 10 mins
-        STRUCTURING         +25  — Repeated identical amounts at regular intervals
+        VPN_DETECTED                  +20  — VPN active during session
+        HIGH_AMOUNT                   +25  — Amount > 3x user's average
+        UNUSUAL_LOGIN_LOCATION        +5   — Login city differs from usual
+        UNUSUAL_TRANSACTION_LOCATION  +5   — Transaction city differs from usual
+        LOGIN_TRANSACTION_MISMATCH    +5   — Login city differs from transaction city
+        NEW_DEVICE                    +15  — Device differs from user's typical
+        UNUSUAL_LOGIN_HOUR            +10  — Login hour > 3h from typical
+        HIGH_VELOCITY                 +15  — >3 transactions from account in 10 mins
+        STRUCTURING_DETECTED          +25  — Repeated identical amounts at regular intervals
 
     Returns:
         dict with alert_id, transaction_id, user_id, amount, merchant,
@@ -155,6 +158,7 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
             JOIN accounts a ON t.account_id = a.account_id
             WHERE t.transaction_id = ?
         """, (transaction_id,)).fetchone()
+        
 
         if not txn:
             return None
@@ -163,6 +167,7 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
         session = conn.execute("""
             SELECT * FROM sessions WHERE session_id = ?
         """, (session_id,)).fetchone()
+       
 
         if not session:
             return None
@@ -183,11 +188,16 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
                 score += 25
                 reason_codes.append("HIGH_AMOUNT")
 
-        # ── RULE 3: UNUSUAL_LOCATION ──────────────────────────────────────────
+        
+       # ── RULE 3: LOCATION RISK(Unusual Location) (3 sub-features) ───────────────────────────────
         if profile and profile["usual_location"]:
-            if txn["location"].lower() != profile["usual_location"].lower():
-                score += 15
-                reason_codes.append("UNUSUAL_LOCATION")
+           location_score, location_reasons = score_location_risk(
+             login_city=session["location"],
+             txn_city=txn["location"],
+             usual_city=profile["usual_location"],
+           )
+           score += location_score
+           reason_codes.extend(location_reasons)
 
         # ── RULE 4: NEW_DEVICE ────────────────────────────────────────────────
         if profile and profile["typical_device"]:
@@ -266,7 +276,7 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
         }
 
     except Exception as e:
-        print(f"[risk_engine] Error scoring transaction: {e}")
+        
         return None
 
     finally:

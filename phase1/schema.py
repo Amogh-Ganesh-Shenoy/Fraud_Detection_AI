@@ -93,7 +93,7 @@ def create_database():
             risk_score INTEGER,
             decision TEXT,
             reason_codes TEXT,
-            created_at TEXT,
+            timestamp TEXT,
             FOREIGN KEY (transaction_id) REFERENCES transactions(transaction_id)
         )
     """)
