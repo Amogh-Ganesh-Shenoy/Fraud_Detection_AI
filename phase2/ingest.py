@@ -71,31 +71,3 @@ def get_account_by_user(user_id):
     conn.close()
     return row
 
-if __name__ == "__main__":
-    # Quick test — fetch first user and simulate an event
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users LIMIT 1")
-    user_id = cursor.fetchone()[0]
-    cursor.execute("SELECT account_id FROM accounts WHERE user_id = ?", (user_id,))
-    account_id = cursor.fetchone()[0]
-    conn.close()
-
-    # Simulate a login
-    session_id = ingest_session(
-        user_id=user_id,
-        ip_address="185.220.101.45",
-        device_type="iPhone",
-        location="Dubai",
-        vpn_detected=0
-    )
-
-    # Simulate a transaction
-    ingest_transaction(
-        account_id=account_id,
-        session_id=session_id,
-        amount=4500.00,
-        merchant="Noon.com",
-        transaction_type="online_payment",
-        location="Dubai"
-    )

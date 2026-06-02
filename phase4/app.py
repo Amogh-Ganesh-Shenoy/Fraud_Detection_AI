@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 import certifi
 
+from phase5.dashboard_tab import render_phase5_tab
+
 import streamlit as st
 import plotly.graph_objects as go
 from dotenv import load_dotenv
@@ -807,14 +809,16 @@ def main():
         st.stop()
 
     # ── Mode tabs ─────────────────────────────────────────────────────────────
-    tab1, tab2 = st.tabs(["🎮 Interactive Play Mode", "📋 Alert History"])
+    tab1, tab2, tab3 = st.tabs(["🎮 Interactive Play Mode", "📋 Alert History", "📊 Phase 5 — Model Evaluation"])
 
     with tab1:
         render_interactive_mode(users)
 
     with tab2:
         render_alert_history()
-
+    
+    with tab3:
+        render_phase5_tab()
 
 if __name__ == "__main__":
     main()

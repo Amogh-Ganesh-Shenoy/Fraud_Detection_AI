@@ -44,7 +44,7 @@ def get_decision(score: int) -> str:
     Converts risk score to decision string.
       0  - 30  → APPROVE
       31 - 70  → CHALLENGE
-      71 - 100 → BLOCK
+      71 + → BLOCK
     """
     if score <= 30:
         return "APPROVE"
@@ -138,8 +138,8 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
         LOGIN_TRANSACTION_MISMATCH    +5   — Login city differs from transaction city
         NEW_DEVICE                    +15  — Device differs from user's typical
         UNUSUAL_LOGIN_HOUR            +10  — Login hour > 3h from typical
-        HIGH_VELOCITY                 +15  — >3 transactions from account in 10 mins
-        STRUCTURING_DETECTED          +25  — Repeated identical amounts at regular intervals
+        HIGH_VELOCITY                 +75  — >3 transactions from account in 10 mins
+        STRUCTURING_DETECTED          +75  — Repeated identical amounts at regular intervals
 
     Returns:
         dict with alert_id, transaction_id, user_id, amount, merchant,
@@ -184,7 +184,7 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
 
         # ── RULE 2: HIGH_AMOUNT ───────────────────────────────────────────────
         if profile and profile["avg_transaction_amount"]:
-            if txn["amount"] > (profile["avg_transaction_amount"] * 3):
+            if txn["amount"] > (profile["avg_transaction_amount"] * 1.5):
                 score += 25
                 reason_codes.append("HIGH_AMOUNT")
 
@@ -220,23 +220,28 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
 
         # ── RULE 6: HIGH_VELOCITY ─────────────────────────────────────────────
         recent_count = conn.execute("""
-            SELECT COUNT(*) as cnt
-            FROM transactions
-            WHERE account_id = ?
-              AND timestamp >= datetime('now', '-10 minutes')
-        """, (txn["account_id"],)).fetchone()["cnt"]
+         SELECT COUNT(*) as cnt
+         FROM transactions
+         WHERE account_id = ?
+         AND timestamp >= datetime(?, '-10 minutes')
+         AND timestamp <= datetime(?, '+10 minutes')
+        """, (txn["account_id"], txn["timestamp"], txn["timestamp"])).fetchone()["cnt"]
 
         if recent_count > 3:
-            score += 15
-            reason_codes.append("HIGH_VELOCITY")
+           score += 75
+           reason_codes.append("HIGH_VELOCITY")
 
         # ── RULE 7: STRUCTURING_DETECTED ─────────────────────────────────────
-        if check_structuring(txn["account_id"], txn["amount"], conn):
-            score += 25
-            reason_codes.append("STRUCTURING_DETECTED")
-
-        # ── Cap score at 100 ──────────────────────────────────────────────────
-        score = min(score, 100)
+        def check_structuring(account_id: str, amount: float, timestamp: str, conn: sqlite3.Connection) -> bool:
+         rows = conn.execute("""
+          SELECT amount, timestamp
+          FROM transactions
+          WHERE account_id = ?
+            AND amount BETWEEN ? * 0.95 AND ? * 1.05
+            AND timestamp >= datetime(?, '-20 minutes')
+            AND timestamp <= datetime(?, '+20 minutes')
+          ORDER BY timestamp ASC
+          """, (account_id, amount, amount, timestamp, timestamp)).fetchall()
 
         # ── Determine decision ────────────────────────────────────────────────
         decision = get_decision(score)
@@ -276,7 +281,7 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
         }
 
     except Exception as e:
-        
+        print(f"[ERROR] score_transaction failed for {transaction_id}: {e}")
         return None
 
     finally:

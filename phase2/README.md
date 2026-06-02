@@ -1,72 +1,117 @@
 # Phase 2 — Event Ingestion & Behavior Profile Tracker
 
 ## Overview
-Handles real-time event ingestion and maintains per-user behavioral baselines.
-Includes two security layers to protect profiles against data poisoning attacks.
+Phase 2 adds two capabilities on top of the Phase 1 schema:
+1. **Event ingestion** — records live sessions and transactions into the database
+2. **Behavior profile tracker** — recalculates user behavioral baselines with
+   two built-in protection layers against data poisoning attacks
+
+---
 
 ## Files
-- `ingest.py` — records new sessions and transactions into the database
-- `profile_tracker.py` — recalculates and protects behavioral baselines
+| File | Purpose |
+|------|---------|
+| `phase2/ingest.py` | Ingests session and transaction events into the database |
+| `phase2/profile_tracker.py` | Recalculates behavior profiles with baseline protection |
+
+---
+
+## How to Run
+
+```bash
+# Ingest a session and transaction manually (for testing)
+python phase2/ingest.py
+```
+
+> Profile recalculation is triggered automatically from the Phase 4
+> risk engine after every non-BLOCK decision. It is not run standalone.
 
 ---
 
 ## ingest.py
 
-Provides four functions for writing and reading live event data:
+Provides four functions for recording live events:
 
-| Function | Description |
-|----------|-------------|
-| `ingest_session()` | Records a new login session — device, location, VPN flag |
-| `ingest_transaction()` | Records a new transaction — amount, merchant, type, location |
-| `get_user_by_id()` | Fetches a user record by UUID |
+| Function | Purpose |
+|----------|---------|
+| `ingest_session()` | Records a new login session |
+| `ingest_transaction()` | Records a new transaction |
+| `get_user_by_id()` | Fetches a user record by user_id |
 | `get_account_by_user()` | Fetches the account linked to a user |
 
 ---
 
 ## profile_tracker.py
 
-Recalculates per-user behavioral baselines from transaction history.
-Two protection layers defend against data poisoning attacks.
+Recalculates a user's behavior profile from their full transaction and
+session history. The profile stores:
 
-### Baseline Values Tracked
+- `avg_transaction_amount` — rolling average spend
+- `usual_location` — most frequent transaction city
+- `typical_device` — most frequently used device
+- `typical_login_hour` — average login hour
+- `historical_baseline_amount` — locked anchor set on first profile write
 
-| Field | Method |
-|-------|--------|
-| `avg_transaction_amount` | Mean of all historical transaction amounts |
-| `usual_location` | Most frequent transaction location |
-| `typical_device` | Most frequent session device type |
-| `typical_login_hour` | Average login hour across all sessions |
-| `historical_baseline_amount` | Set on first profile write, never changed |
+---
 
-### Baseline Protection Layers
+## Baseline Protection — 2 Layers
 
-| Layer | Function | Description |
-|-------|----------|-------------|
-| Layer 1 | `apply_avg_cap()` | Caps how much a single update can shift the average — max 15% movement per update. Prevents rapid baseline manipulation. |
-| Layer 2 | `check_baseline_drift()` | Compares current average against the stored historical baseline. Blocks update if drift exceeds 40%. Catches slow, patient poisoning attacks. |
+### Layer 1 — Per-Transaction Cap
+Limits how much a single update can shift `avg_transaction_amount`.
+Maximum allowed movement per update: **±15% of current average**.
 
-### Protection Flow
+current_avg = AED 2,000
+new_avg     = AED 800   ← attacker submitted many small transactions
+max_shift   = AED 300   ← 15% of 2,000
+capped_avg  = AED 1,700 ← not 800
 
-New transaction arrives
-↓
+### Layer 2 — Drift Detector
+Compares the proposed new average against the locked
+`historical_baseline_amount`. If drift exceeds **40%**, the update
+is blocked entirely and a drift alert is printed.
+
+historical_baseline = AED 2,000
+proposed new avg    = AED 900
+drift               = 55%  → BLOCKED (threshold: 40%)
+
+**Why this matters:** Without these layers, an attacker could
+submit hundreds of small transactions over days to drag the
+baseline down — making future large fraudulent transactions
+look normal to the HIGH_AMOUNT rule.
+
+---
+
+## Protection Flow
+
+New transaction ingested
+│
+▼
 Compute raw new average from all transactions
-↓
-Layer 1 — Apply 15% movement cap
-↓
-Layer 2 — Check drift against historical baseline (40% threshold)
-↓
-Pass → Write updated profile to DB
-Fail → Freeze update, profile unchanged
+│
+▼
+Layer 1 — Apply ±15% cap on movement
+│
+▼
+Layer 2 — Check drift vs historical baseline
+│
+drift > 40%?
+┌────┴────┐
+YES       NO
+│         │
+BLOCK     Write updated profile to DB
+update
 
-### Key Functions
+---
 
-| Function | Description |
-|----------|-------------|
-| `recalculate_profile()` | Recalculates one user's profile with both protection layers applied |
-| `recalculate_all_profiles()` | Loops all users — used by Phase 5 batch simulation |
-| `get_profile()` | Fetches current profile row — used by Phase 3 risk engine |
+## Key Design Decision
 
-## Security Note
-`recalculate_profile()` is called from Phase 4 `run_risk_engine()` **only when
-the decision is not BLOCK**. Blocked transactions never update the baseline —
-this is the first line of data poisoning defence.
+`recalculate_profile()` is called from Phase 4 **only when the
+decision is not BLOCK**. This means fraudulent transactions that
+get blocked never influence the user's behavioral baseline —
+the first and most important line of defence against data poisoning.
+
+---
+
+## Dependencies
+
+python-dotenv

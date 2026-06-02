@@ -12,7 +12,7 @@ fake = Faker()
 DB_PATH = os.getenv("DB_PATH", "data/fraud.db")
 
 # UAE specific data
-UAE_CITIES = ["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "Ras Al Khaimah"]
+UAE_CITIES = ["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "Ras Al Khaimah", "Umm Al Quwain", "Fujairah"]
 UAE_NATIONALITIES = ["Emirati", "Indian", "Pakistani", "British", "Filipino", "Egyptian", "American"]
 DEVICE_TYPES = ["iPhone", "Android", "Windows PC", "MacBook", "iPad"]
 MERCHANTS = [
@@ -120,7 +120,7 @@ def generate_transactions(cursor, accounts, sessions, transactions_per_account=1
                 "transaction_id": transaction_id,
                 "account_id": account["account_id"],
                 "session_id": random.choice(user_sessions),
-                "amount": round(random.uniform(10, 25000), 2),
+                "amount": round(random.uniform(10, 15000), 2),
                 "currency": "AED",
                 "merchant": random.choice(MERCHANTS),
                 "transaction_type": random.choice(TRANSACTION_TYPES),
@@ -143,9 +143,19 @@ def generate_behavior_profiles(cursor, users, transactions, accounts):
     for t in transactions:
         tx_map[t["account_id"]].append(t["amount"])
 
+    profiles = []
     for user in users:
         account_id = account_map.get(user["user_id"])
         amounts = tx_map.get(account_id, [random.uniform(100, 5000)])
+        # Build profile dict so it can be returned and used by generate_fraud_transactions
+        profile = {
+            "user_id":            user["user_id"],
+            "avg_amount":         round(sum(amounts) / len(amounts), 2),
+            "usual_location":     user["city"],
+            "typical_device":     random.choice(DEVICE_TYPES),
+            "typical_login_hour": random.randint(8, 22),
+        }
+        profiles.append(profile)
         cursor.execute("""
             INSERT INTO behavior_profiles VALUES (
                 ?, ?, ?, ?, ?, ?, ?
@@ -160,36 +170,228 @@ def generate_behavior_profiles(cursor, users, transactions, accounts):
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ))
     print(f"✅ {len(users)} behavior profiles created.")
+    return profiles
 
-def generate_fraud_labels(cursor, transactions, fraud_rate=0.10):
-    fraud_types = ["card_not_present", "account_takeover", "identity_theft", "unusual_location", "high_velocity"]
-    count = 0
-    for t in transactions:
-        is_fraud = random.choices([0, 1], weights=[1 - fraud_rate, fraud_rate])[0]
+def generate_fraud_transactions(cursor, accounts, sessions, profiles):
+    fraud_transactions = []
+    profile_map = {p["user_id"]: p for p in profiles}
+
+    # ── SCENARIO A: 7 accounts × 5 transactions at 1.5 min intervals → HIGH_VELOCITY ──
+    velocity_accounts = random.sample(accounts, 7)
+    for account in velocity_accounts:
+        base_time = datetime.strptime(random_timestamp(days_back=90), "%Y-%m-%d %H:%M:%S")
+        user_sessions = [s for s in sessions if s["user_id"] == account["user_id"]]
+        for i in range(5):
+            timestamp = base_time + timedelta(minutes=1.5 * i)
+            transaction_id = str(uuid.uuid4())
+            transaction = {
+                "transaction_id":   transaction_id,
+                "account_id":       account["account_id"],
+                "session_id":       random.choice(user_sessions)["session_id"],
+                "amount":           round(random.uniform(500, 3000), 2),
+                "currency":         "AED",
+                "merchant":         random.choice(MERCHANTS),
+                "transaction_type": "purchase",
+                "location":         random.choice(UAE_CITIES),
+                "timestamp":        timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            fraud_transactions.append(transaction)
+            cursor.execute("""
+                INSERT INTO transactions VALUES (
+                    :transaction_id, :account_id, :session_id, :amount,
+                    :currency, :merchant, :transaction_type, :location, :timestamp
+                )
+            """, transaction)
+
+    # ── SCENARIO B: 5 accounts × 5 transactions at 4 min intervals with near-identical amounts → STRUCTURING_DETECTED ──
+    structuring_accounts = random.sample(
+        [a for a in accounts if a not in velocity_accounts], 5
+    )
+    for account in structuring_accounts:
+        base_time = datetime.strptime(random_timestamp(days_back=90), "%Y-%m-%d %H:%M:%S")
+        user_sessions = [s for s in sessions if s["user_id"] == account["user_id"]]
+        base_amount = round(random.uniform(500, 2000), 2)
+        for i in range(5):
+            # Keep amount within ±3% to stay inside structuring detection window
+            timestamp = base_time + timedelta(minutes=4 * i)
+            transaction_id = str(uuid.uuid4())
+            amount = round(base_amount * random.uniform(0.97, 1.03), 2)
+            transaction = {
+                "transaction_id":   transaction_id,
+                "account_id":       account["account_id"],
+                "session_id":       random.choice(user_sessions)["session_id"],
+                "amount":           amount,
+                "currency":         "AED",
+                "merchant":         random.choice(MERCHANTS),
+                "transaction_type": "transfer",
+                "location":         random.choice(UAE_CITIES),
+                "timestamp":        timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            fraud_transactions.append(transaction)
+            cursor.execute("""
+                INSERT INTO transactions VALUES (
+                    :transaction_id, :account_id, :session_id, :amount,
+                    :currency, :merchant, :transaction_type, :location, :timestamp
+                )
+            """, transaction)
+
+    # ── SCENARIO C: 15 accounts × 2 transactions with fraud sessions → VPN + NEW_DEVICE + UNUSUAL_LOGIN + HIGH_AMOUNT ──
+    takeover_accounts = random.sample(
+        [a for a in accounts if a not in velocity_accounts and a not in structuring_accounts], 15
+    )
+    for account in takeover_accounts:
+        profile = profile_map.get(account["user_id"])
+        if not profile:
+            continue
+
+        # Build a fraud session with VPN, foreign device, different city, odd login hour
+        fraud_city = random.choice([c for c in UAE_CITIES if c != profile["usual_location"]])
+        fraud_device = random.choice([d for d in DEVICE_TYPES if d != profile["typical_device"]])
+        fraud_hour = (profile["typical_login_hour"] + 6) % 24
+        fraud_login_time = datetime.strptime(
+            random_timestamp(days_back=90), "%Y-%m-%d %H:%M:%S"
+        ).replace(hour=fraud_hour)
+
+        fraud_session_id = str(uuid.uuid4())
         cursor.execute("""
-            INSERT INTO fraud_labels VALUES (?, ?, ?, ?, ?)
+            INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
-            str(uuid.uuid4()),
-            t["transaction_id"],
-            is_fraud,
-            random.choice(fraud_types) if is_fraud else None,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            fraud_session_id,
+            account["user_id"],
+            fake.ipv4(),
+            fraud_device,
+            fraud_city,
+            1,
+            fraud_login_time.strftime("%Y-%m-%d %H:%M:%S")
         ))
-        if is_fraud:
-            count += 1
-    print(f"✅ Fraud labels created. {count} fraudulent transactions flagged.")
 
+        for i in range(2):
+            # Amount set to 1.6x–2.5x user average to guarantee HIGH_AMOUNT fires
+            timestamp = fraud_login_time + timedelta(minutes=5 * i)
+            transaction_id = str(uuid.uuid4())
+            amount = round(profile["avg_amount"] * random.uniform(1.6, 2.5), 2)
+            transaction = {
+                "transaction_id":   transaction_id,
+                "account_id":       account["account_id"],
+                "session_id":       fraud_session_id,
+                "amount":           amount,
+                "currency":         "AED",
+                "merchant":         random.choice(MERCHANTS),
+                "transaction_type": "purchase",
+                "location":         random.choice([c for c in UAE_CITIES if c != profile["usual_location"]]),
+                "timestamp":        timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            fraud_transactions.append(transaction)
+            cursor.execute("""
+                INSERT INTO transactions VALUES (
+                    :transaction_id, :account_id, :session_id, :amount,
+                    :currency, :merchant, :transaction_type, :location, :timestamp
+                )
+            """, transaction)
+
+    # ── SCENARIO D: 10 accounts × 1 transaction — 6 detectable mismatches, 4 undetected slip-throughs ──
+    mismatch_accounts = random.sample(
+        [a for a in accounts if a not in velocity_accounts
+         and a not in structuring_accounts
+         and a not in takeover_accounts], 10
+    )
+    for i, account in enumerate(mismatch_accounts):
+        profile = profile_map.get(account["user_id"])
+        if not profile:
+            continue
+
+        # First 6 trigger location + hour rules, last 4 look completely normal
+        if i < 6:
+            login_city = random.choice([c for c in UAE_CITIES if c != profile["usual_location"]])
+            txn_city = random.choice([c for c in UAE_CITIES if c != login_city])
+            login_hour = (profile["typical_login_hour"] + 5) % 24
+        else:
+            login_city = profile["usual_location"]
+            txn_city = profile["usual_location"]
+            login_hour = profile["typical_login_hour"]
+
+        fraud_login_time = datetime.strptime(
+            random_timestamp(days_back=90), "%Y-%m-%d %H:%M:%S"
+        ).replace(hour=login_hour)
+
+        fraud_session_id = str(uuid.uuid4())
+        cursor.execute("""
+            INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            fraud_session_id,
+            account["user_id"],
+            fake.ipv4(),
+            random.choice(DEVICE_TYPES),
+            login_city,
+            0,
+            fraud_login_time.strftime("%Y-%m-%d %H:%M:%S")
+        ))
+
+        # Low amount to avoid HIGH_AMOUNT — these should slip through or only CHALLENGE
+        transaction_id = str(uuid.uuid4())
+        transaction = {
+            "transaction_id":   transaction_id,
+            "account_id":       account["account_id"],
+            "session_id":       fraud_session_id,
+            "amount":           round(random.uniform(200, 800), 2),
+            "currency":         "AED",
+            "merchant":         random.choice(MERCHANTS),
+            "transaction_type": "purchase",
+            "location":         txn_city,
+            "timestamp":        fraud_login_time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        fraud_transactions.append(transaction)
+        cursor.execute("""
+            INSERT INTO transactions VALUES (
+                :transaction_id, :account_id, :session_id, :amount,
+                :currency, :merchant, :transaction_type, :location, :timestamp
+            )
+        """, transaction)
+
+    return fraud_transactions
+
+def generate_fraud_labels(cursor, fraud_transactions):
+    for transaction in fraud_transactions:
+        cursor.execute("""
+            INSERT INTO fraud_labels (transaction_id, is_fraud, fraud_type)
+            VALUES (?, ?, ?)
+        """, (transaction["transaction_id"], 1, "rule_based"))
+    print(f"✅ {len(fraud_transactions)} fraud labels created.")
+    
+def generate_legitimate_labels(cursor, transactions, fraud_transactions):
+    fraud_ids = {t["transaction_id"] for t in fraud_transactions}
+    legitimate = [t for t in transactions if t["transaction_id"] not in fraud_ids]
+    
+    for transaction in legitimate:
+        cursor.execute("""
+            INSERT INTO fraud_labels (transaction_id, is_fraud, fraud_type)
+            VALUES (?, ?, ?)
+        """, (transaction["transaction_id"], 0, "none"))
+    print(f"✅ {len(legitimate)} legitimate labels created.")
+
+# ── Clear existing data before regenerating ──────────────────
 def generate_all():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+
+    print("🗑️ Clearing existing data...")
+    cursor.execute("DELETE FROM fraud_labels")
+    cursor.execute("DELETE FROM behavior_profiles")
+    cursor.execute("DELETE FROM transactions")
+    cursor.execute("DELETE FROM sessions")
+    cursor.execute("DELETE FROM accounts")
+    cursor.execute("DELETE FROM users")
+    print("✅ Tables cleared.\n")
 
     print("🚀 Starting data generation...\n")
     users = generate_users(cursor)
     accounts = generate_accounts(cursor, users)
     sessions = generate_sessions(cursor, users)
     transactions = generate_transactions(cursor, accounts, sessions)
-    generate_behavior_profiles(cursor, users, transactions, accounts)
-    generate_fraud_labels(cursor, transactions)
+    profiles = generate_behavior_profiles(cursor, users, transactions, accounts)
+    fraud_transactions = generate_fraud_transactions(cursor, accounts, sessions, profiles)
+    generate_fraud_labels(cursor, fraud_transactions)
+    generate_legitimate_labels(cursor, transactions, fraud_transactions)
 
     conn.commit()
     conn.close()
