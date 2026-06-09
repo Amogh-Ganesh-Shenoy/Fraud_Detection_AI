@@ -51,7 +51,7 @@ app = FastAPI(
 # Without this, the browser blocks cross-origin requests by default.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "https://fraud-detection-ai-six.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
