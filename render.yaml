@@ -1,0 +1,39 @@
+# Project root render.yaml — read by Render at build time
+# Tells Render how to install dependencies and start the FastAPI server
+# Without this file, Render would not know how to run the project
+
+services:
+  - type: web
+    name: uae-fraud-detection-api
+    env: python
+    
+    # Render runs this command first to install all packages from requirements.txt
+    # requirements.txt lives at the project root and lists all backend dependencies
+    # This ensures the Render server has fastapi, scikit-learn, sendgrid etc. available
+    buildCommand: pip install -r requirements.txt
+    
+    # After build, Render runs this to start the FastAPI server
+    # --host 0.0.0.0 makes it accessible publicly, --port 8000 matches our API setup
+    # This replaces running uvicorn manually in PowerShell locally
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    
+    # Environment variables injected at runtime — sourced from Render dashboard
+    # These mirror what your local .env file contains
+    # sync: false means Render will prompt you to enter the real values manually
+    envVars:
+      - key: DB_PATH
+        value: data/fraud.db
+      - key: DASHBOARD_USERNAME
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: ALERT_EMAIL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_EXPIRE_MINUTES
+        value: 60
