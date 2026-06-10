@@ -27,8 +27,8 @@ Final Decision Thresholds:
 import os
 from dotenv import load_dotenv
 
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 
 # Import all three models — ensemble orchestrates them, not replaces them
 from phase3.risk_engine import score_transaction
@@ -70,7 +70,7 @@ def get_db():
     # Connects to PostgreSQL using DATABASE_URL from environment
     # RealDictCursor returns rows as dicts — row["amount"] not row[0]
     # Used only by evaluate_ensemble() for offline batch evaluation
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
 

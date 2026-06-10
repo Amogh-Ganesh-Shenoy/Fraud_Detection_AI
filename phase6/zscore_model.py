@@ -16,9 +16,8 @@ import statistics
 import os
 from datetime import datetime
 from dotenv import load_dotenv
-
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 
 load_dotenv()
 

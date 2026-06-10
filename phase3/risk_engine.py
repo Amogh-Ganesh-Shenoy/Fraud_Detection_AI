@@ -19,8 +19,8 @@ import statistics
 import os
 from datetime import datetime, timedelta
 
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 
 from phase3.location_risk import score_location_risk
 from dotenv import load_dotenv
@@ -39,7 +39,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db():
     # Connects to PostgreSQL using DATABASE_URL from environment
     # RealDictCursor returns rows as dicts — row["amount"] not row[0]
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
 

@@ -8,8 +8,8 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 
 load_dotenv()
 
@@ -25,7 +25,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_connection():
     # Connects to PostgreSQL using the full connection URL
     # RealDictCursor returns rows as dicts — consistent with api/dependencies.py
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn=psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
 

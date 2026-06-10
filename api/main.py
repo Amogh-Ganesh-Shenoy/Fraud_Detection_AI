@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-import psycopg2
+
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware

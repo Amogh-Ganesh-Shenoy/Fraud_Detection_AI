@@ -6,10 +6,10 @@
 import os
 from datetime import datetime, timedelta
 
-# psycopg2 — PostgreSQL driver replacing sqlite3
-# Connects to Render's managed PostgreSQL via DATABASE_URL environment variable
-import psycopg2
-import psycopg2.extras
+# psycopg — psycopg3 PostgreSQL driver, Python 3.14 compatible
+# Replaces psycopg2 — connection API is identical except row_factory syntax
+import psycopg
+from psycopg.rows import dict_row
 
 # FastAPI security and HTTP exception utilities
 from fastapi import Depends, HTTPException, status
@@ -43,8 +43,8 @@ def get_db():
     """
     Opens and returns a PostgreSQL connection using DATABASE_URL from .env.
     Used as a FastAPI dependency — injected into endpoints via Depends(get_db).
-    cursor_factory = RealDictCursor allows column access by name (row["amount"])
-    mirroring the sqlite3.Row behaviour from the previous implementation.
+    row_factory=dict_row allows column access by name (row["amount"])
+    replacing psycopg2's RealDictCursor with psycopg3's equivalent.
 
     Centralised here so every endpoint shares the same connection logic
     and DATABASE_URL is never duplicated across files.
@@ -54,8 +54,8 @@ def get_db():
         behavior_profiles, alerts, fraud_labels
     """
     # Connect to PostgreSQL using the full connection URL from environment
-    # RealDictCursor returns rows as dicts instead of tuples
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    # dict_row returns rows as dicts instead of tuples — psycopg3 syntax
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
 
