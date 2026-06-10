@@ -141,7 +141,7 @@ export default function ResultCard({ result }: ResultCardProps) {
             Z-Score
           </p>
           <p className={`text-xl font-bold ${is_anomaly ? "text-yellow-400" : "text-white"}`}>
-            {pct(anomaly_score)}
+            {anomaly_score.toFixed(2)}
           </p>
           <p className={`text-xs ${is_anomaly ? "text-yellow-600" : "text-gray-600"}`}>
             {is_anomaly ? "anomaly detected" : "no anomaly"}
