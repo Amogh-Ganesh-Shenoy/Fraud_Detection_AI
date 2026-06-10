@@ -45,8 +45,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # Random Forest carries most weight — best recall on this dataset
 # Rule engine second — strong precision and domain-encoded fraud knowledge
 # Z-Score least — limited to amount signal only, weak on synthetic data
-RF_WEIGHT     = 0.50
-RULE_WEIGHT   = 0.35
+RF_WEIGHT     = 0.35
+RULE_WEIGHT   = 0.50
 ZSCORE_WEIGHT = 0.15
 
 # ── Normalisation denominators ────────────────────────────────────────────────
