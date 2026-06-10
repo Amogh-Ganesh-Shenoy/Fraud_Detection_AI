@@ -37,7 +37,7 @@ ZSCORE_THRESHOLD = 2.5
 def get_db():
     # Connects to PostgreSQL using DATABASE_URL from environment
     # RealDictCursor returns rows as dicts — row["amount"] not row[0]
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
 
@@ -75,7 +75,7 @@ def score_zscore(transaction_id: str, user_id: str) -> dict | None:
             print(f"[ZSCORE] Transaction {transaction_id} not found.")
             return None
 
-        amount     = txn["amount"]
+        amount     = float (txn["amount"])
         account_id = txn["account_id"]
 
         # ── Step 2: Pull user's average amount from behavior_profiles ─────────
@@ -92,7 +92,7 @@ def score_zscore(transaction_id: str, user_id: str) -> dict | None:
             print(f"[ZSCORE] No behavior profile found for user {user_id}.")
             return None
 
-        avg_amount = profile["avg_transaction_amount"]
+        avg_amount = float(profile["avg_transaction_amount"])
 
         # ── Step 3: Pull all historical amounts for std dev calculation ────────
         # Excludes the current transaction to avoid self-reference
@@ -105,7 +105,7 @@ def score_zscore(transaction_id: str, user_id: str) -> dict | None:
         """, (account_id, transaction_id))
         rows = cur.fetchall()
 
-        historical_amounts = [r["amount"] for r in rows]
+        historical_amounts = [float(r["amount"]) for r in rows]
 
         # ── Step 4: Compute std deviation — real if enough data, else fallback ─
         # Needs at least 3 values for a meaningful std deviation

@@ -128,7 +128,7 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
         # ── RULE 2: HIGH_AMOUNT ───────────────────────────────────────────────
         # Flags if transaction amount exceeds 1.5x the user's average
         if profile and profile["avg_transaction_amount"]:
-            if txn["amount"] > (profile["avg_transaction_amount"] * 1.5):
+            if float(txn["amount"]) > (float(profile["avg_transaction_amount"]) * 1.5):
                 score += 25
                 reason_codes.append("HIGH_AMOUNT")
 
