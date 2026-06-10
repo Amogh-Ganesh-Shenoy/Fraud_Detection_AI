@@ -72,7 +72,7 @@ export default function GaugeChart({ score, decision }: GaugeChartProps) {
       {/* ── Gauge + centre label ────────────────────────────────────────────── */}
       {/* ResponsiveContainer fills parent width; height is fixed for semicircle */}
       {/* The centre label is absolutely positioned over the chart SVG          */}
-      <div className="relative w-full" style={{ height: 180 }}>
+      <div className="relative w-full" style={{ height: 200 }}>
 
         <ResponsiveContainer width="100%" height="100%">
           <RadialBarChart
@@ -93,7 +93,7 @@ export default function GaugeChart({ score, decision }: GaugeChartProps) {
         {/* ── Centre overlay — score number + decision label ──────────────── */}
         {/* Positioned at the flat edge of the semicircle (bottom centre)      */}
         {/* score displayed as percentage; decision label colour-coded          */}
-        <div className="absolute inset-0 flex flex-col items-center justify-end pb-2">
+        <div className="absolute inset-0 flex flex-col items-center justify-end pb-6">
           <p className={`text-4xl font-black tracking-tight ${labelColour}`}>
             {(score * 100).toFixed(1)}%
           </p>
