@@ -7,19 +7,17 @@ services:
     name: uae-fraud-detection-api
     env: python
     
+    # Force Python 3.11 — psycopg2-binary 2.9.9 is incompatible with Python 3.14
+    # Render was defaulting to 3.14, causing ABI symbol errors on import
+    pythonVersion: "3.11.0"
+    
     # Render runs this command first to install all packages from requirements.txt
-    # requirements.txt lives at the project root and lists all backend dependencies
-    # This ensures the Render server has fastapi, scikit-learn, sendgrid etc. available
     buildCommand: pip install -r requirements.txt
     
-    # After build, Render runs this to start the FastAPI server
-    # --host 0.0.0.0 makes it accessible publicly, --port 8000 matches our API setup
-    # This replaces running uvicorn manually in PowerShell locally
-    startCommand: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    # $PORT is dynamically assigned by Render — never hardcode 8000
+    # Render's health check will fail if the server binds to the wrong port
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     
-    # Environment variables injected at runtime — sourced from Render dashboard
-    # These mirror what your local .env file contains
-    # sync: false means Render will prompt you to enter the real values manually
     envVars:
       - key: DB_PATH
         value: data/fraud.db
