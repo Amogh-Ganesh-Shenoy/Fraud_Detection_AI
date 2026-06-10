@@ -125,10 +125,26 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
             score += 20
             reason_codes.append("VPN_DETECTED")
 
-        # ── RULE 2: HIGH_AMOUNT ───────────────────────────────────────────────
-        # Flags if transaction amount exceeds 1.5x the user's average
+        
+        # ── RULE 2: HIGH_AMOUNT ───────────────────────────────────────────────────────
+        # Flags if transaction amount exceeds a multiple of the user's average
+        # Tiered scoring — higher deviation from baseline = higher risk score
         if profile and profile["avg_transaction_amount"]:
-            if float(txn["amount"]) > (float(profile["avg_transaction_amount"]) * 1.5):
+           avg = float(profile["avg_transaction_amount"])
+           ratio = float(txn["amount"]) / avg
+           if ratio >= 4.3:
+              score += 75
+              reason_codes.append("HIGH_AMOUNT")
+           elif ratio >= 3.6:
+                score += 65
+                reason_codes.append("HIGH_AMOUNT")
+           elif ratio >= 2.9:
+                score += 50
+                reason_codes.append("HIGH_AMOUNT")
+           elif ratio >= 2.2:
+                score += 35
+                reason_codes.append("HIGH_AMOUNT")
+           elif ratio >= 1.5:
                 score += 25
                 reason_codes.append("HIGH_AMOUNT")
 
