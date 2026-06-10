@@ -3,9 +3,13 @@
 # Centralises DB access and JWT authentication so no endpoint
 # handles these concerns directly.
 
-import sqlite3
 import os
 from datetime import datetime, timedelta
+
+# psycopg2 — PostgreSQL driver replacing sqlite3
+# Connects to Render's managed PostgreSQL via DATABASE_URL environment variable
+import psycopg2
+import psycopg2.extras
 
 # FastAPI security and HTTP exception utilities
 from fastapi import Depends, HTTPException, status
@@ -19,38 +23,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Environment variables ─────────────────────────────────────────────────────
-# All three JWT values come from .env — never hardcode these
-# DB_PATH points to the SQLite database built in Phase 1
-DB_PATH           = os.getenv("DB_PATH", "data/fraud.db")
-JWT_SECRET_KEY    = os.getenv("JWT_SECRET_KEY", "")
-JWT_ALGORITHM     = os.getenv("JWT_ALGORITHM", "HS256")
+# DATABASE_URL points to Render's managed PostgreSQL in production
+# Falls back to None locally — local dev still uses SQLite via phase files
+DATABASE_URL       = os.getenv("DATABASE_URL")
+JWT_SECRET_KEY     = os.getenv("JWT_SECRET_KEY", "")
+JWT_ALGORITHM      = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", 60))
 
-# Dashboard credentials — same values used in Phase 4 Streamlit auth gate
-DASHBOARD_USERNAME = os.getenv("DASHBOARD_USERNAME", "admin")
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "fraud2024")
+# Dashboard credentials — loaded from .env, never hardcoded
+DASHBOARD_USERNAME = os.getenv("DASHBOARD_USERNAME", "")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE CONNECTION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_db() -> sqlite3.Connection:
+def get_db():
     """
-    Opens and returns a SQLite connection.
+    Opens and returns a PostgreSQL connection using DATABASE_URL from .env.
     Used as a FastAPI dependency — injected into endpoints via Depends(get_db).
-    row_factory = sqlite3.Row allows column access by name (row["amount"])
-    rather than position (row[0]).
+    cursor_factory = RealDictCursor allows column access by name (row["amount"])
+    mirroring the sqlite3.Row behaviour from the previous implementation.
 
     Centralised here so every endpoint shares the same connection logic
-    and DB_PATH is never duplicated across files.
+    and DATABASE_URL is never duplicated across files.
 
     Tables accessed across endpoints:
         users, accounts, sessions, transactions,
         behavior_profiles, alerts, fraud_labels
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    # Connect to PostgreSQL using the full connection URL from environment
+    # RealDictCursor returns rows as dicts instead of tuples
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     return conn
 
 
@@ -90,7 +95,6 @@ def create_access_token(data: dict) -> str:
 
 # OAuth2PasswordBearer tells FastAPI where to expect the token —
 # React sends it in the Authorization header as: Bearer <token>
-# tokenUrl is the login endpoint that issues the token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 def verify_token(token: str = Depends(oauth2_scheme)) -> str:
@@ -109,9 +113,7 @@ def verify_token(token: str = Depends(oauth2_scheme)) -> str:
 
     Raises:
         HTTP 401 Unauthorized if token is missing, expired, or tampered with
-        — React intercepts this and redirects the user to the login page
     """
-    # Define the 401 response we'll raise on any token failure
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token. Please log in again.",
@@ -123,12 +125,10 @@ def verify_token(token: str = Depends(oauth2_scheme)) -> str:
         payload  = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         username = payload.get("sub")
 
-        # "sub" must be present — a token without a subject is malformed
         if username is None:
             raise credentials_exception
 
         return username
 
     except JWTError:
-        # Catches expired tokens, tampered signatures, and malformed tokens
         raise credentials_exception

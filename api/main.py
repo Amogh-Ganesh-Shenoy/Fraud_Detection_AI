@@ -3,10 +3,11 @@
 # React never calls phase files directly; all data flows through these endpoints.
 # Build order: read-only endpoints first, then session/score last.
 
-import sqlite3
 import uuid
 from datetime import datetime
 from typing import Optional
+
+import psycopg2
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,8 +48,9 @@ app = FastAPI(
 )
 
 # ── CORS Middleware ───────────────────────────────────────────────────────────
-# Allows the React frontend (running on localhost:3000) to call this API.
+# Allows the React frontend (localhost:3000 and Vercel) to call this API.
 # Without this, the browser blocks cross-origin requests by default.
+# allow_credentials=True is required for JWT token headers to be accepted.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "https://fraud-detection-ai-six.vercel.app"],
@@ -89,7 +91,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 @app.get("/users", response_model=list[UserSummary])
 def get_users(
-    db: sqlite3.Connection = Depends(get_db),
+    db=Depends(get_db),
     _: str = Depends(verify_token),
 ):
     """
@@ -97,16 +99,18 @@ def get_users(
     Pulls user_id, full_name, city from the users table (Phase 1 schema).
     Protected — requires valid JWT token.
     """
-    rows = db.execute("""
+    # RealDictCursor returns rows as dicts — no conversion needed unlike sqlite3.Row
+    # Source: users table, populated by Phase 1 generate_users()
+    cur = db.cursor()
+    cur.execute("""
         SELECT user_id, full_name, city
         FROM users
         ORDER BY full_name ASC
-    """).fetchall()
-
+    """)
+    rows = cur.fetchall()
     db.close()
 
-    # Convert sqlite3.Row objects to dicts so Pydantic can validate them
-    return [dict(row) for row in rows]
+    return list(rows)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -116,7 +120,7 @@ def get_users(
 @app.get("/users/{user_id}/profile", response_model=UserProfile)
 def get_user_profile(
     user_id: str,
-    db: sqlite3.Connection = Depends(get_db),
+    db=Depends(get_db),
     _: str = Depends(verify_token),
 ):
     """
@@ -125,13 +129,16 @@ def get_user_profile(
     from behavior_profiles table (built by Phase 1 generate_behavior_profiles()).
     Protected — requires valid JWT token.
     """
-    row = db.execute("""
+    # %s replaces ? for PostgreSQL parameter binding — functionally identical
+    # Source: behavior_profiles table, keyed by user_id
+    cur = db.cursor()
+    cur.execute("""
         SELECT avg_transaction_amount, usual_location,
                typical_device, typical_login_hour
         FROM behavior_profiles
-        WHERE user_id = ?
-    """, (user_id,)).fetchone()
-
+        WHERE user_id = %s
+    """, (user_id,))
+    row = cur.fetchone()
     db.close()
 
     # Return 404 if no profile exists for this user
@@ -151,7 +158,7 @@ def get_user_profile(
 @app.get("/alerts", response_model=list[AlertSummary])
 def get_alerts(
     limit: int = 10,
-    db: sqlite3.Connection = Depends(get_db),
+    db=Depends(get_db),
     _: str = Depends(verify_token),
 ):
     """
@@ -161,13 +168,16 @@ def get_alerts(
 
     Tables:
         alerts       — alert_id, transaction_id, risk_score, decision,
-                       reason_codes, timestamp (renamed from created_at in Phase 4)
+                       reason_codes, timestamp
         transactions — amount, merchant, location
 
     Query param: limit (default 10) — number of most recent alerts to return.
     Protected — requires valid JWT token.
     """
-    rows = db.execute("""
+    # LIMIT %s instead of LIMIT ? — PostgreSQL parameter binding syntax
+    # Source: alerts JOIN transactions, ordered by most recent first
+    cur = db.cursor()
+    cur.execute("""
         SELECT
             a.risk_score,
             a.decision,
@@ -179,12 +189,12 @@ def get_alerts(
         FROM alerts a
         JOIN transactions t ON a.transaction_id = t.transaction_id
         ORDER BY a.timestamp DESC
-        LIMIT ?
-    """, (limit,)).fetchall()
-
+        LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
     db.close()
 
-    return [dict(row) for row in rows]
+    return list(rows)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -196,8 +206,8 @@ def get_metrics(_: str = Depends(verify_token)):
     """
     Returns static Phase 5 and Phase 6 evaluation metrics for the
     MetricsPanel and FeatureBar components in React.
-    No DB query or recomputation needed — these are the final validated
-    results from Phase 5 batch simulation and Phase 6 model evaluation.
+    No DB query needed — these are the final validated results from
+    Phase 5 batch simulation and Phase 6 model evaluation.
     Protected — requires valid JWT token.
     """
     return {
@@ -215,7 +225,7 @@ def get_metrics(_: str = Depends(verify_token)):
             "f1":        0.075,
             "auc":       None,
         },
-        # Random Forest test set performance — from phase6/random_forest_model.py evaluate_random_forest()
+        # Random Forest test set performance — from phase6/random_forest_model.py
         "random_forest": {
             "precision": 0.950,
             "recall":    0.950,
@@ -268,12 +278,10 @@ def create_session(
     Protected — requires valid JWT token.
     """
     # Generate a placeholder IP — real IP detection can be added later
-    ip_address = "0.0.0.0"
-
-    # ingest_session() writes the session to the DB and returns the session_id
+    # ingest_session() writes the session to PostgreSQL and returns session_id
     session_id = ingest_session(
         user_id=user_id,
-        ip_address=ip_address,
+        ip_address="0.0.0.0",
         device_type=device_type,
         location=location,
         vpn_detected=int(vpn_detected),
@@ -289,7 +297,7 @@ def create_session(
 @app.post("/score", response_model=ScoreResponse)
 def score_transaction_endpoint(
     payload: ScoreRequest,
-    db: sqlite3.Connection = Depends(get_db),
+    db=Depends(get_db),
     _: str = Depends(verify_token),
 ):
     """
@@ -297,16 +305,16 @@ def score_transaction_endpoint(
     This is the core endpoint — wires together all phase files end to end.
 
     Flow:
-        1. Create session via phase2/ingest.py → ingest_session()
-        2. Create transaction via phase2/ingest.py → ingest_transaction()
-        3. Fetch account_id for this user from accounts table
+        1. Fetch account_id for this user from accounts table
+        2. Create session via phase2/ingest.py → ingest_session()
+        3. Create transaction via phase2/ingest.py → ingest_transaction()
         4. Run full ensemble via phase6/ensemble.py → ensemble_score()
         5. Return combined result to React
 
     Writes to:
-        sessions table    — via ingest_session()
+        sessions table     — via ingest_session()
         transactions table — via ingest_transaction()
-        alerts table      — via phase3/risk_engine.py inside ensemble_score()
+        alerts table       — via phase3/risk_engine.py inside ensemble_score()
 
     Protected — requires valid JWT token.
     """
@@ -314,10 +322,12 @@ def score_transaction_endpoint(
     # ── Step 1: Fetch account_id for this user ────────────────────────────────
     # ingest_transaction() requires account_id, not user_id directly.
     # accounts table links user_id → account_id (Phase 1 schema).
-    account = db.execute("""
-        SELECT account_id FROM accounts WHERE user_id = ?
-    """, (payload.user_id,)).fetchone()
-
+    # %s replaces ? for PostgreSQL parameter binding
+    cur = db.cursor()
+    cur.execute("""
+        SELECT account_id FROM accounts WHERE user_id = %s
+    """, (payload.user_id,))
+    account = cur.fetchone()
     db.close()
 
     if not account:
