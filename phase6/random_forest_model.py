@@ -155,8 +155,8 @@ def build_feature_matrix() -> pd.DataFrame:
         cur2.execute("""
             SELECT COUNT(*) as cnt FROM transactions
             WHERE account_id = %s
-              AND timestamp >= %s::timestamp - interval '10 minutes'
-              AND timestamp <= %s::timestamp + interval '10 minutes'
+              AND timestamp::timestamp >= %s::timestamp - interval '10 minutes'
+              AND timestamp::timestamp <= %s::timestamp + interval '10 minutes'
         """, (account_id, txn["timestamp"], txn["timestamp"]))
         velocity_count = cur2.fetchone()["cnt"]
         conn2.close()
@@ -362,8 +362,8 @@ def predict_single(transaction_id: str, user_id: str) -> dict | None:
         cur.execute("""
             SELECT COUNT(*) as cnt FROM transactions
             WHERE account_id = %s
-              AND timestamp >= %s::timestamp - interval '10 minutes'
-              AND timestamp <= %s::timestamp + interval '10 minutes'
+              AND timestamp::timestamp >= %s::timestamp - interval '10 minutes'
+              AND timestamp::timestamp <= %s::timestamp + interval '10 minutes'
         """, (txn["account_id"], txn["timestamp"], txn["timestamp"]))
         velocity_count = cur.fetchone()["cnt"]
 

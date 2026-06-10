@@ -171,8 +171,8 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
             SELECT COUNT(*) as cnt
             FROM transactions
             WHERE account_id = %s
-            AND timestamp >= %s::timestamp - interval '10 minutes'
-            AND timestamp <= %s::timestamp + interval '10 minutes'
+            AND timestamp::timestamp >= %s::timestamp - interval '10 minutes'
+            AND timestamp::timestamp <= %s::timestamp + interval '10 minutes'
         """, (txn["account_id"], txn["timestamp"], txn["timestamp"]))
         recent_count = cur.fetchone()["cnt"]
 
@@ -188,8 +188,8 @@ def score_transaction(transaction_id: str, session_id: str) -> dict | None:
             FROM transactions
             WHERE account_id = %s
               AND amount BETWEEN %s * 0.95 AND %s * 1.05
-              AND timestamp >= %s::timestamp - interval '20 minutes'
-              AND timestamp <= %s::timestamp + interval '20 minutes'
+              AND timestamp::timestamp >= %s::timestamp - interval '20 minutes'
+              AND timestamp::timestamp <= %s::timestamp + interval '20 minutes'
             ORDER BY timestamp ASC
         """, (txn["account_id"], txn["amount"], txn["amount"], txn["timestamp"], txn["timestamp"]))
         struct_rows = cur.fetchall()
