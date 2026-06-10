@@ -16,7 +16,6 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-import psycopg2
 import psycopg
 from psycopg.rows import dict_row
 
