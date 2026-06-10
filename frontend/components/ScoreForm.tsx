@@ -27,7 +27,7 @@ const TRANSACTION_TYPES = [
 ];
 
 // ── Device type options — mirrors device_type values in sessions table
-const DEVICE_TYPES = ["mobile", "desktop", "tablet"];
+const DEVICE_TYPES = ["iPhone", "Android", "MacBook", "Windows PC", "iPad"];
 
 export default function ScoreForm({ onResult, onProfile }: ScoreFormProps) {
 
