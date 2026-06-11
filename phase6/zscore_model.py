@@ -186,28 +186,83 @@ def run_zscore_batch() -> list[dict]:
 
 def evaluate_zscore() -> dict:
     """
-    Runs batch scoring and evaluates against fraud_labels ground truth.
-    Offline evaluation only — not called by any API endpoint.
+    Evaluates Z-score model against fraud_labels ground truth.
+    Offline only — not called at runtime.
+    Pre-fetches all data in bulk — no per-transaction DB calls.
     """
     conn = get_db()
-    cur = conn.cursor()
+    cur  = conn.cursor()
 
-    # Pull ground truth labels from fraud_labels table
-    # Source: fraud_labels table, populated by Phase 1
+    # Pull all transactions with account context
+    cur.execute("""
+        SELECT t.transaction_id, t.account_id, t.amount, a.user_id
+        FROM transactions t
+        JOIN accounts a ON t.account_id = a.account_id
+    """)
+    transactions = cur.fetchall()
+
+    # Pull all behavior profiles indexed by user_id
+    cur.execute("SELECT user_id, avg_transaction_amount FROM behavior_profiles")
+    profiles    = cur.fetchall()
+    profile_map = {p["user_id"]: p for p in profiles}
+
+    # Pull all historical amounts per account for std dev calculation
+    cur.execute("SELECT account_id, transaction_id, amount FROM transactions")
+    all_amounts     = cur.fetchall()
+    account_amounts = {}
+    for r in all_amounts:
+        account_amounts.setdefault(r["account_id"], []).append({
+            "tid": r["transaction_id"],
+            "amount": float(r["amount"])
+        })
+
+    # Pull fraud labels
     cur.execute("SELECT transaction_id, is_fraud FROM fraud_labels")
-    labels = cur.fetchall()
+    labels    = cur.fetchall()
+    label_map = {r["transaction_id"]: r["is_fraud"] for r in labels}
+
     conn.close()
 
-    label_map = {r["transaction_id"]: r["is_fraud"] for r in labels}
-    results   = run_zscore_batch()
-
     TP = FP = FN = TN = 0
-    for result in results:
-        tid             = result["transaction_id"]
-        predicted_fraud = result["is_anomaly"]
-        actual_fraud    = bool(label_map.get(tid, 0))
+    scored = 0
 
-        if predicted_fraud and actual_fraud:     TP += 1
+    for txn in transactions:
+        tid        = txn["transaction_id"]
+        user_id    = txn["user_id"]
+        account_id = txn["account_id"]
+        amount     = float(txn["amount"])
+
+        if tid not in label_map:
+            continue
+
+        profile = profile_map.get(user_id)
+        if not profile or not profile["avg_transaction_amount"]:
+            continue
+
+        avg_amount = float(profile["avg_transaction_amount"])
+
+        # Historical amounts excluding current transaction
+        historical = [
+            r["amount"] for r in account_amounts.get(account_id, [])
+            if r["tid"] != tid
+        ]
+
+        if len(historical) >= 3:
+            std_dev = statistics.stdev(historical)
+        else:
+            std_dev = avg_amount
+
+        if std_dev == 0:
+            std_dev = avg_amount if avg_amount > 0 else 1.0
+
+        z_score    = (amount - avg_amount) / std_dev
+        is_anomaly = z_score >= ZSCORE_THRESHOLD
+
+        scored += 1
+        predicted_fraud = is_anomaly
+        actual_fraud    = bool(label_map[tid])
+
+        if predicted_fraud and actual_fraud:       TP += 1
         elif predicted_fraud and not actual_fraud: FP += 1
         elif not predicted_fraud and actual_fraud: FN += 1
         else:                                      TN += 1
@@ -218,7 +273,7 @@ def evaluate_zscore() -> dict:
                  if (precision + recall) > 0 else 0.0)
 
     metrics = {
-        "total":     len(results),
+        "total":     scored,
         "TP": TP, "FP": FP, "FN": FN, "TN": TN,
         "precision": round(precision, 4),
         "recall":    round(recall, 4),

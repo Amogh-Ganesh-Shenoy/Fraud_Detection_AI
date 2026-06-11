@@ -262,6 +262,9 @@ def evaluate_random_forest(model: RandomForestClassifier, test_df: pd.DataFrame)
     print("  RANDOM FOREST — EVALUATION RESULTS (Test Set 20%)")
     print("=" * 55)
     print(f"  Precision: {round(precision, 4)} | Recall: {round(recall, 4)} | F1: {round(f1, 4)} | AUC: {round(auc, 4)}")
+    print("\n  Feature Importances:")
+    for feat, imp in sorted_importances:
+       print(f"    {feat}: {round(imp, 4)}")
     print("=" * 55 + "\n")
 
     return {

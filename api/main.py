@@ -213,42 +213,42 @@ def get_metrics(_: str = Depends(verify_token)):
     return {
         # Phase 5 rule engine baseline — from phase5 batch simulation
         "phase5": {
-            "precision": 0.908,
-            "recall":    0.690,
-            "f1":        0.784,
+            "precision": 0.9412,
+            "recall":    0.8,
+            "f1":        0.8649,
             "auc":       0.8916,
         },
         # Z-Score standalone performance — from phase6/zscore_model.py evaluate_zscore()
         "zscore": {
-            "precision": 0.571,
-            "recall":    0.040,
-            "f1":        0.075,
+            "precision": 0.75,
+            "recall":    0.18,
+            "f1":        0.2903,
             "auc":       None,
         },
         # Random Forest test set performance — from phase6/random_forest_model.py
         "random_forest": {
-            "precision": 0.950,
-            "recall":    0.950,
-            "f1":        0.950,
-            "auc":       0.9992,
+            "precision": 1.0,
+            "recall":    1.0,
+            "f1":        1.0,
+            "auc":       1.0,
         },
         # Ensemble full DB performance — from phase6/ensemble.py evaluate_ensemble()
         "ensemble": {
             "precision": 1.0,
-            "recall":    0.81,
-            "f1":        0.895,
+            "recall":    0.8,
+            "f1":        0.8889,
             "auc":       None,
         },
         # Feature importances from Random Forest — phase6/random_forest_model.py
         "feature_importances": {
-            "velocity_count":          0.5060,
-            "amount_ratio":            0.2800,
-            "unusual_login_location":  0.1267,
-            "vpn_flag":                0.0366,
-            "hour_deviation":          0.0258,
-            "unusual_txn_location":    0.0108,
-            "login_txn_mismatch":      0.0090,
-            "new_device_flag":         0.0051,
+            "velocity_count":          0.5422,
+            "amount_ratio":            0.2582,
+            "unusual_login_location":  0.0998,
+            "vpn_flag":                0.0522,
+            "hour_deviation":          0.0183,
+            "unusual_txn_location":    0.0128,
+            "login_txn_mismatch":      0.0111,
+            "new_device_flag":         0.0054,
         },
     }
 
