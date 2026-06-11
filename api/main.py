@@ -235,8 +235,8 @@ def get_metrics(_: str = Depends(verify_token)):
         # Ensemble full DB performance — from phase6/ensemble.py evaluate_ensemble()
         "ensemble": {
             "precision": 1.0,
-            "recall":    0.79,
-            "f1":        0.8827,
+            "recall":    0.81,
+            "f1":        0.895,
             "auc":       None,
         },
         # Feature importances from Random Forest — phase6/random_forest_model.py

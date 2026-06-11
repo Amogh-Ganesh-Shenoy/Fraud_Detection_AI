@@ -107,6 +107,20 @@ def build_feature_matrix() -> pd.DataFrame:
     labels    = cur.fetchall()
     label_map = {r["transaction_id"]: r["is_fraud"] for r in labels}
 
+    # Pull all velocity counts in one bulk query — replaces per-transaction DB calls
+    # Self-join counts how many transactions from the same account fall within
+    # ±10 minutes of each transaction — keyed by transaction_id for fast lookup
+    cur.execute("""
+        SELECT t1.transaction_id, COUNT(t2.transaction_id) AS cnt
+        FROM transactions t1
+        JOIN transactions t2 ON t1.account_id = t2.account_id
+            AND t2.timestamp::timestamp >= t1.timestamp::timestamp - interval '10 minutes'
+            AND t2.timestamp::timestamp <= t1.timestamp::timestamp + interval '10 minutes'
+        GROUP BY t1.transaction_id
+    """)
+    velocity_rows  = cur.fetchall()
+    velocity_map   = {r["transaction_id"]: r["cnt"] for r in velocity_rows}
+
     conn.close()
 
     rows = []
@@ -123,8 +137,8 @@ def build_feature_matrix() -> pd.DataFrame:
             continue
 
         # Engineer all 8 features — same logic as predict_single()
-        avg          = profile["avg_transaction_amount"] or 1.0
-        amount_ratio = txn["amount"] / avg
+        avg          = float(profile["avg_transaction_amount"]) or 1.0
+        amount_ratio = float(txn["amount"]) / avg
         vpn_flag     = int(session["vpn_detected"])
         new_device_flag = int(
             session["device_type"].lower() != profile["typical_device"].lower()
@@ -148,18 +162,8 @@ def build_feature_matrix() -> pd.DataFrame:
         except (ValueError, TypeError):
             hour_deviation = 0
 
-        # Velocity count — transactions from same account within ±10 minutes
-        # Uses a separate connection to avoid cursor conflicts
-        conn2 = get_db()
-        cur2  = conn2.cursor()
-        cur2.execute("""
-            SELECT COUNT(*) as cnt FROM transactions
-            WHERE account_id = %s
-              AND timestamp::timestamp >= %s::timestamp - interval '10 minutes'
-              AND timestamp::timestamp <= %s::timestamp + interval '10 minutes'
-        """, (account_id, txn["timestamp"], txn["timestamp"]))
-        velocity_count = cur2.fetchone()["cnt"]
-        conn2.close()
+        # Look up precomputed velocity count — no DB call needed
+        velocity_count = velocity_map.get(tid, 1)
 
         rows.append({
             "transaction_id":         tid,

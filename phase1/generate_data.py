@@ -9,8 +9,8 @@ import random
 import uuid
 from datetime import datetime, timedelta
 
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 from faker import Faker
 from dotenv import load_dotenv
 
@@ -42,7 +42,7 @@ TRANSACTION_TYPES = ["purchase", "transfer", "withdrawal", "bill_payment", "onli
 def get_db():
     # Connects to PostgreSQL using DATABASE_URL from .env
     # RealDictCursor returns rows as dicts — consistent with all other phase files
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
 def random_emirates_id():
@@ -329,7 +329,7 @@ def generate_fraud_transactions(cur, accounts, sessions, profiles):
                 "transaction_id":   str(uuid.uuid4()),
                 "account_id":       account["account_id"],
                 "session_id":       fraud_session_id,
-                "amount":           round(profile["avg_amount"] * random.uniform(1.6, 2.5), 2),
+                "amount":           round(profile["avg_amount"] * random.uniform(3.0, random.uniform(5.0, 15.0)), 2),
                 "currency":         "AED",
                 "merchant":         random.choice(MERCHANTS),
                 "transaction_type": "purchase",

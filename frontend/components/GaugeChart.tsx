@@ -129,7 +129,7 @@ export default function GaugeChart({ score, decision }: GaugeChartProps) {
       {/* Reminds the user what the number represents without them needing to   */}
       {/* cross-reference ResultCard — keeps the gauge self-contained           */}
       <p className="text-xs text-gray-600 mt-3 text-center">
-        Weighted ensemble score · RF 50% · Rule 35% · Z-Score 15%
+        Weighted ensemble score · RF 35% · Rule 50% · Z-Score 15%
       </p>
 
     </div>

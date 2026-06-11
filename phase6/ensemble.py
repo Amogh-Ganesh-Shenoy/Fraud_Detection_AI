@@ -9,8 +9,8 @@ How it works:
     aggregation, and produces a single final decision.
 
 Weights:
-    Random Forest  → 0.50  (best recall, 8 features, learned patterns)
-    Rule Engine    → 0.35  (strong precision, domain knowledge)
+    Random Forest  → 0.35  (best recall, 8 features, learned patterns)
+    Rule Engine    → 0.50  (strong precision, domain knowledge)
     Z-Score        → 0.15  (weakest on this dataset, single feature)
 
 Normalisation:
@@ -20,9 +20,15 @@ Normalisation:
 
 Final Decision Thresholds:
     0.0 – 0.30  → APPROVE
-    0.30 – 0.45 → CHALLENGE
-    0.45+       → BLOCK
+    0.30 – 0.35 → CHALLENGE
+    0.35+       → BLOCK
 """
+
+import pickle
+import statistics
+import numpy as np
+import pandas as pd
+from datetime import datetime
 
 import os
 from dotenv import load_dotenv
@@ -34,6 +40,8 @@ from psycopg.rows import dict_row
 from phase3.risk_engine import score_transaction
 from phase6.zscore_model import score_zscore
 from phase6.random_forest_model import predict_single
+
+MODEL_PATH = "phase6/random_forest.pkl"
 
 load_dotenv()
 
@@ -59,7 +67,7 @@ ZSCORE_MAX = 5.0
 # CHALLENGE_MAX lowered to 0.45 to improve Recall — missed fraud is more
 # costly than blocking a legitimate transaction in fraud detection
 APPROVE_MAX   = 0.30
-CHALLENGE_MAX = 0.45
+CHALLENGE_MAX = 0.35
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -221,45 +229,193 @@ def ensemble_score(transaction_id: str, session_id: str, user_id: str) -> dict |
 
 def evaluate_ensemble() -> dict:
     """
-    Runs the ensemble across every transaction and evaluates against
-    fraud_labels ground truth. Offline only — not called at runtime.
+    Evaluates ensemble performance against fraud_labels ground truth.
+    Offline only — not called at runtime. Does NOT write to alerts table.
+    Pre-fetches all data in bulk queries — no per-transaction DB calls.
+
+    Data sources:
+        transactions      — amount, location, timestamp, session_id, account_id
+        sessions          — vpn_detected, device_type, location, login_time
+        behavior_profiles — avg_transaction_amount, usual_location,
+                            typical_device, typical_login_hour
+        accounts          — links transactions to users
+        fraud_labels      — ground truth is_fraud label (0 or 1)
     """
     conn = get_db()
     cur  = conn.cursor()
 
-    # Pull every transaction with session_id and user_id
-    # Source: transactions + accounts tables
+    # Pull all transactions with account and user context in one query
     cur.execute("""
-        SELECT t.transaction_id, t.session_id, a.user_id
+        SELECT t.transaction_id, t.account_id, t.session_id,
+               t.amount, t.location AS txn_location, t.timestamp, a.user_id
         FROM transactions t
         JOIN accounts a ON t.account_id = a.account_id
     """)
-    rows = cur.fetchall()
+    transactions = cur.fetchall()
 
-    # Pull ground truth labels
-    # Source: fraud_labels table, populated by Phase 1
+    # Pull all sessions indexed by session_id
+    cur.execute("""
+        SELECT session_id, vpn_detected, device_type,
+               location AS login_location, login_time
+        FROM sessions
+    """)
+    sessions    = cur.fetchall()
+    session_map = {s["session_id"]: s for s in sessions}
+
+    # Pull all behavior profiles indexed by user_id
+    cur.execute("""
+        SELECT user_id, avg_transaction_amount, usual_location,
+               typical_device, typical_login_hour
+        FROM behavior_profiles
+    """)
+    profiles    = cur.fetchall()
+    profile_map = {p["user_id"]: p for p in profiles}
+
+    # Pull fraud labels indexed by transaction_id
     cur.execute("SELECT transaction_id, is_fraud FROM fraud_labels")
-    labels = cur.fetchall()
-    conn.close()
-
+    labels    = cur.fetchall()
     label_map = {r["transaction_id"]: r["is_fraud"] for r in labels}
 
-    TP = FP = FN = TN = 0
+    # Pull all velocity counts in one bulk query — same as build_feature_matrix()
+    cur.execute("""
+        SELECT t1.transaction_id, COUNT(t2.transaction_id) AS cnt
+        FROM transactions t1
+        JOIN transactions t2 ON t1.account_id = t2.account_id
+            AND t2.timestamp::timestamp >= t1.timestamp::timestamp - interval '10 minutes'
+            AND t2.timestamp::timestamp <= t1.timestamp::timestamp + interval '10 minutes'
+        GROUP BY t1.transaction_id
+    """)
+    velocity_rows = cur.fetchall()
+    velocity_map  = {r["transaction_id"]: r["cnt"] for r in velocity_rows}
 
-    for row in rows:
-        tid        = row["transaction_id"]
-        session_id = row["session_id"]
-        user_id    = row["user_id"]
+    # Pull all historical amounts per account for Z-score computation
+    cur.execute("SELECT account_id, amount FROM transactions")
+    all_amounts     = cur.fetchall()
+    account_amounts = {}
+    for r in all_amounts:
+        account_amounts.setdefault(r["account_id"], []).append(float(r["amount"]))
+
+    conn.close()
+
+    # Load Random Forest model once — not per transaction
+    import pickle
+    if not os.path.exists(MODEL_PATH):
+        print(f"[ENSEMBLE] Model not found at {MODEL_PATH}")
+        return {}
+    with open(MODEL_PATH, "rb") as f:
+        model = pickle.load(f)
+
+    feature_cols = [
+        "amount_ratio", "vpn_flag", "new_device_flag",
+        "unusual_login_location", "unusual_txn_location",
+        "login_txn_mismatch", "hour_deviation", "velocity_count",
+    ]
+
+    # Build feature rows for all transactions in memory — no DB calls in loop
+    feature_rows = []
+    meta         = []
+
+    for txn in transactions:
+        tid        = txn["transaction_id"]
+        user_id    = txn["user_id"]
+        account_id = txn["account_id"]
 
         if tid not in label_map:
             continue
 
-        result = ensemble_score(tid, session_id, user_id)
-        if not result:
+        session = session_map.get(txn["session_id"])
+        profile = profile_map.get(user_id)
+
+        if not session or not profile:
             continue
 
-        predicted_fraud = result["final_decision"] == "BLOCK"
-        actual_fraud    = bool(label_map[tid])
+        avg          = float(profile["avg_transaction_amount"]) or 1.0
+        amount_ratio = float(txn["amount"]) / avg
+        vpn_flag     = int(session["vpn_detected"])
+        new_device_flag = int(
+            session["device_type"].lower() != profile["typical_device"].lower()
+        )
+        unusual_login_location = int(
+            session["login_location"].strip().lower() !=
+            profile["usual_location"].strip().lower()
+        )
+        unusual_txn_location = int(
+            txn["txn_location"].strip().lower() !=
+            profile["usual_location"].strip().lower()
+        )
+        login_txn_mismatch = int(
+            session["login_location"].strip().lower() !=
+            txn["txn_location"].strip().lower()
+        )
+        try:
+            login_hour     = datetime.fromisoformat(str(session["login_time"])).hour
+            hour_diff      = abs(login_hour - profile["typical_login_hour"])
+            hour_deviation = min(hour_diff, 24 - hour_diff)
+        except (ValueError, TypeError):
+            hour_deviation = 0
+
+        velocity_count = velocity_map.get(tid, 1)
+
+        # Z-score computed in memory — no DB call
+        amounts = [a for a in account_amounts.get(account_id, []) if a != float(txn["amount"])]
+        avg_amount = avg
+        if len(amounts) >= 3:
+            import statistics
+            std_dev = statistics.stdev(amounts)
+        else:
+            std_dev = avg_amount
+        if std_dev == 0:
+            std_dev = avg_amount if avg_amount > 0 else 1.0
+        z_score    = (float(txn["amount"]) - avg_amount) / std_dev
+        is_anomaly = z_score >= ZSCORE_MAX
+
+        # Rule engine score computed in memory — no DB call, no alert write
+        score = 0
+        if session["vpn_detected"]:
+            score += 20
+        if float(txn["amount"]) / avg >= 4.3:
+            score += 75
+        elif float(txn["amount"]) / avg >= 3.6:
+            score += 65
+        elif float(txn["amount"]) / avg >= 2.9:
+            score += 50
+        elif float(txn["amount"]) / avg >= 2.2:
+            score += 35
+        elif float(txn["amount"]) / avg >= 1.5:
+            score += 25
+        if velocity_count > 3:
+            score += 75
+
+        feature_rows.append([
+            amount_ratio, vpn_flag, new_device_flag,
+            unusual_login_location, unusual_txn_location,
+            login_txn_mismatch, hour_deviation, velocity_count,
+        ])
+        meta.append({
+            "tid":        tid,
+            "risk_score": score,
+            "z_score":    z_score,
+            "is_fraud":   label_map[tid],
+        })
+
+    # Batch RF prediction — one call for all transactions
+    import numpy as np
+    X                  = pd.DataFrame(feature_rows, columns=feature_cols)
+    fraud_probabilities = model.predict_proba(X)[:, 1]
+
+    TP = FP = FN = TN = 0
+
+    for i, m in enumerate(meta):
+        fraud_probability = fraud_probabilities[i]
+        norm_rule         = min(m["risk_score"] / RULE_MAX, 1.0)
+        norm_zscore       = max(0.0, min(m["z_score"] / ZSCORE_MAX, 1.0))
+        norm_rf           = fraud_probability
+
+        final_score    = (norm_rf * RF_WEIGHT) + (norm_rule * RULE_WEIGHT) + (norm_zscore * ZSCORE_WEIGHT)
+        final_decision = get_ensemble_decision(final_score)
+
+        predicted_fraud = final_decision == "BLOCK"
+        actual_fraud    = bool(m["is_fraud"])
 
         if predicted_fraud and actual_fraud:       TP += 1
         elif predicted_fraud and not actual_fraud: FP += 1
