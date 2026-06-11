@@ -64,7 +64,7 @@ RULE_MAX   = 150.0
 ZSCORE_MAX = 5.0
 
 # ── Ensemble decision thresholds ──────────────────────────────────────────────
-# CHALLENGE_MAX lowered to 0.45 to improve Recall — missed fraud is more
+# CHALLENGE_MAX lowered to 0.35 to improve Recall — missed fraud is more
 # costly than blocking a legitimate transaction in fraud detection
 APPROVE_MAX   = 0.30
 CHALLENGE_MAX = 0.35
@@ -77,7 +77,7 @@ CHALLENGE_MAX = 0.35
 def get_db():
     # Connects to PostgreSQL using DATABASE_URL from environment
     # RealDictCursor returns rows as dicts — row["amount"] not row[0]
-    # Used only by evaluate_ensemble() for offline batch evaluation
+    # Used by ensemble_score() to update the alert decision after scoring
     conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     return conn
 
@@ -111,8 +111,8 @@ def get_ensemble_decision(ensemble_score: float) -> str:
     """
     Maps normalised ensemble score (0.0-1.0) to a final decision string.
     0.00 – 0.30 → APPROVE
-    0.30 – 0.45 → CHALLENGE
-    0.45+       → BLOCK
+    0.30 – 0.35 → CHALLENGE
+    0.35+       → BLOCK
     """
     if ensemble_score <= APPROVE_MAX:
         return "APPROVE"
@@ -138,6 +138,7 @@ def ensemble_score(transaction_id: str, session_id: str, user_id: str) -> dict |
         4. Normalise all 3 scores to 0.0-1.0
         5. Apply weighted average → ensemble_score
         6. Map ensemble_score → final decision
+        7. Update alerts table with ensemble final_decision
 
     Data sources (via called functions):
         phase3/risk_engine.py  — transactions, sessions, behavior_profiles, alerts
@@ -147,7 +148,8 @@ def ensemble_score(transaction_id: str, session_id: str, user_id: str) -> dict |
 
     # ── Step 1: Run the rule engine ───────────────────────────────────────────
     # Pulls transaction + session + behavior_profile, applies 7 rules,
-    # writes alert to alerts table, returns risk_score + reason_codes
+    # writes alert to alerts table with rule engine decision,
+    # returns risk_score + reason_codes
     rule_result = score_transaction(transaction_id, session_id)
 
     if not rule_result:
@@ -199,6 +201,24 @@ def ensemble_score(transaction_id: str, session_id: str, user_id: str) -> dict |
 
     # ── Step 6: Map ensemble score to final decision ──────────────────────────
     final_decision = get_ensemble_decision(final_score)
+
+    # ── Step 7: Update alerts table with ensemble final decision ──────────────
+    # score_transaction() writes the rule engine decision to alerts.
+    # We overwrite it here so the alert table shows the final ensemble verdict
+    # rather than the intermediate rule engine verdict.
+    # Source: alerts table, keyed by transaction_id
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute("""
+            UPDATE alerts
+            SET decision = %s
+            WHERE transaction_id = %s
+        """, (final_decision, transaction_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[ENSEMBLE] Failed to update alert decision for {transaction_id}: {e}")
 
     return {
         "transaction_id":    transaction_id,
